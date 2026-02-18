@@ -1,0 +1,211 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ft_transcendence</title>
+</head>
+<body style="font-family: sans-serif; padding: 24px; max-width: 1100px;">
+  <h1>ft_transcendence — Accounts + RAG + Orchestrator</h1>
+
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+    <section style="border:1px solid #ddd; padding: 12px;">
+      <h2>Signup</h2>
+      <input id="su_email" placeholder="email" style="width:100%; margin:4px 0;" />
+      <input id="su_username" placeholder="username" style="width:100%; margin:4px 0;" />
+      <input id="su_password" placeholder="password (min 8)" type="password" style="width:100%; margin:4px 0;" />
+      <button onclick="signup()">Signup</button>
+    </section>
+
+    <section style="border:1px solid #ddd; padding: 12px;">
+      <h2>Login</h2>
+      <input id="li_user" placeholder="email or username" style="width:100%; margin:4px 0;" />
+      <input id="li_password" placeholder="password" type="password" style="width:100%; margin:4px 0;" />
+      <button onclick="login()">Login</button>
+      <button onclick="logout()">Logout</button>
+    </section>
+  </div>
+
+  <section style="border:1px solid #ddd; padding: 12px; margin-top: 16px;">
+    <h2>Me</h2>
+    <button onclick="me()">Refresh /api/me</button>
+    <pre id="me_out" style="white-space:pre-wrap; border:1px solid #eee; padding:10px;"></pre>
+  </section>
+
+  <section style="border:1px solid #ddd; padding: 12px; margin-top: 16px;">
+    <h2>Knowledge Base (RAG)</h2>
+    <p>Upload a txt/md file (first). Then ask the assistant questions grounded in these docs.</p>
+    <input id="kb_title" placeholder="Optional title" style="width:100%; margin:4px 0;" />
+    <input id="kb_file" type="file" accept=".txt,.md,text/plain,text/markdown" />
+    <button onclick="uploadKb()">Upload KB Document</button>
+    <pre id="kb_out" style="white-space:pre-wrap; border:1px solid #eee; padding:10px;"></pre>
+  </section>
+
+  <section style="border:1px solid #ddd; padding: 12px; margin-top: 16px;">
+    <h2>AI Assistant (Streaming)</h2>
+    <textarea id="msg" rows="4" placeholder="Ask something... (ex: What does the policy say about passwords?)"
+      style="width:100%; margin:4px 0;"></textarea>
+    <button onclick="askStream()">Send (stream)</button>
+    <button onclick="askOnce()">Send (non-stream)</button>
+
+    <h3>Output</h3>
+    <pre id="out" style="white-space:pre-wrap; border:1px solid #eee; padding:10px; min-height: 160px;"></pre>
+
+    <h3>Citations</h3>
+    <pre id="cites" style="white-space:pre-wrap; border:1px solid #eee; padding:10px;"></pre>
+  </section>
+
+  <script>
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        credentials: "include",
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+        ...options
+      });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch { data = text; }
+      if (!res.ok) throw { status: res.status, data };
+      return data;
+    }
+
+    async function signup() {
+      try {
+        await api("/api/auth/signup", {
+          method: "POST",
+          body: JSON.stringify({
+            email: document.getElementById("su_email").value,
+            username: document.getElementById("su_username").value,
+            password: document.getElementById("su_password").value
+          })
+        });
+        alert("Signup ok");
+        await me();
+      } catch (e) { alert("Signup error: " + JSON.stringify(e)); }
+    }
+
+    async function login() {
+      try {
+        await api("/api/auth/login", {
+          method: "POST",
+          body: JSON.stringify({
+            emailOrUsername: document.getElementById("li_user").value,
+            password: document.getElementById("li_password").value
+          })
+        });
+        alert("Login ok");
+        await me();
+      } catch (e) { alert("Login error: " + JSON.stringify(e)); }
+    }
+
+    async function logout() {
+      try {
+        await api("/api/auth/logout", { method: "POST", body: JSON.stringify({}) });
+        alert("Logged out");
+        document.getElementById("me_out").textContent = "";
+      } catch (e) { alert("Logout error: " + JSON.stringify(e)); }
+    }
+
+    async function me() {
+      try {
+        const data = await api("/api/me");
+        document.getElementById("me_out").textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        document.getElementById("me_out").textContent = JSON.stringify(e, null, 2);
+      }
+    }
+
+    async function uploadKb() {
+      const file = document.getElementById("kb_file").files[0];
+      if (!file) return alert("Pick a file first");
+
+      const form = new FormData();
+      form.append("file", file);
+      const title = document.getElementById("kb_title").value.trim();
+      if (title) form.append("title", title);
+
+      try {
+        const res = await fetch("/api/kb/documents", { method: "POST", credentials: "include", body: form });
+        const text = await res.text();
+        if (!res.ok) throw { status: res.status, data: text };
+        document.getElementById("kb_out").textContent = text;
+      } catch (e) {
+        document.getElementById("kb_out").textContent = JSON.stringify(e, null, 2);
+      }
+    }
+
+    async function askOnce() {
+      document.getElementById("out").textContent = "";
+      document.getElementById("cites").textContent = "";
+
+      try {
+        const data = await api("/api/assistant", {
+          method: "POST",
+          body: JSON.stringify({ message: document.getElementById("msg").value })
+        });
+        document.getElementById("out").textContent = data.answer || "";
+        document.getElementById("cites").textContent = JSON.stringify(data.citations || [], null, 2);
+      } catch (e) {
+        document.getElementById("out").textContent = JSON.stringify(e, null, 2);
+      }
+    }
+
+    // Parse SSE events from fetch stream
+    async function askStream() {
+      document.getElementById("out").textContent = "";
+      document.getElementById("cites").textContent = "";
+
+      const message = document.getElementById("msg").value;
+
+      const res = await fetch("/api/assistant/stream", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message })
+      });
+
+      if (!res.ok) {
+        document.getElementById("out").textContent = await res.text();
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buf = "";
+      let currentEvent = "message";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+
+        // SSE frames separated by blank line
+        const parts = buf.split("\n\n");
+        buf = parts.pop();
+
+        for (const frame of parts) {
+          const lines = frame.split("\n").filter(Boolean);
+          let eventName = currentEvent;
+          let dataLine = null;
+
+          for (const line of lines) {
+            if (line.startsWith("event:")) eventName = line.slice(6).trim();
+            if (line.startsWith("data:")) dataLine = line.slice(5).trim();
+          }
+
+          if (!dataLine) continue;
+          const data = JSON.parse(dataLine);
+
+          if (eventName === "delta") {
+            document.getElementById("out").textContent += data.text;
+          } else if (eventName === "done") {
+            document.getElementById("cites").textContent = JSON.stringify(data.citations || [], null, 2);
+          } else if (eventName === "error") {
+            document.getElementById("out").textContent += "\n\n[ERROR] " + data.message;
+          }
+        }
+      }
+    }
+  </script>
+</body>
+</html>

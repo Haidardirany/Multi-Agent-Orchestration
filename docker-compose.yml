@@ -1,0 +1,80 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-ft_transcendence}_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ft_transcendence}
+      POSTGRES_USER: ${POSTGRES_USER:-ft_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./backend/db/init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [app_net]
+
+  backend:
+    build:
+      context: ./backend
+    container_name: ${COMPOSE_PROJECT_NAME:-ft_transcendence}_backend
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      BACKEND_PORT: ${BACKEND_PORT:-3000}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://ft_user:change_me@db:5432/ft_transcendence}
+
+      # ✅ ADD THESE (Ollama)
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      OLLAMA_TEMPERATURE: ${OLLAMA_TEMPERATURE:-0.2}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
+
+      JWT_SECRET: ${JWT_SECRET:-dev_change_me}
+      COOKIE_NAME: ${COOKIE_NAME:-ft_auth}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+
+      UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-5}
+
+      # Optional; fine to keep as localhost since frontend is served via proxy
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8080}
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "3000"
+    volumes:
+      - uploads_data:/app/uploads
+    networks: [app_net]
+
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: ${COMPOSE_PROJECT_NAME:-ft_transcendence}_frontend
+    expose:
+      - "80"
+    networks: [app_net]
+
+  proxy:
+    image: nginx:1.25-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-ft_transcendence}_proxy
+    depends_on:
+      - backend
+      - frontend
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    volumes:
+      - ./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks: [app_net]
+
+networks:
+  app_net:
+
+volumes:
+  db_data:
+  uploads_data:
+
+
